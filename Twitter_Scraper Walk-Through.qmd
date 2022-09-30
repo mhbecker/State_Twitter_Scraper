@@ -1,0 +1,261 @@
+---
+title: "State-Level Twitter Web Scraping Script"
+author: "Michael H. Becker"
+format: html
+editor: visual
+---
+
+## Summary
+
+This script applies the tools made available via the `rvest` and `rtweet` packages to first identify the current state senators and state legislators of a provided state, and subsequently, scrape the twitter accounts listed on their ballotpedia profiles (e.g., https://ballotpedia.org/Wendell_Beitzel). This script can be automated, and provided file indexing is stable, will produce a longitudinal data set of tweets for each individual.
+
+For the purposes of demonstrating this script, I use the United States States of Kentucky.
+
+## Setup and Required Packages
+
+```{r load_packages, message = FALSE, eval = FALSE}
+library(here); library(tidyverse); library(stringr); library(ltm); library(rvest); library(rtweet)
+here()
+```
+
+## Generating Account Lists
+
+```{r account_lists, message = FALSE, eval = FALSE}
+### Kentucky ###
+## House
+site<-"https://ballotpedia.org/Kentucky_House_of_Representatives"
+site_html<-read_html(site)
+Name<-site_html%>%
+  html_elements("#officeholder-table td+ td a")%>%
+  html_text2()
+Party<-site_html%>%
+  html_elements(".partytd")%>%
+  html_text2()
+Link<-site_html%>%
+  html_elements("#officeholder-table td+ td a")%>%
+  html_attr("href")
+KY_House<-as.data.frame(cbind(Name, Party, Link))
+KY_House$Twitter_Link<-NA; KY_House$Twitter_Type<-NA
+```
+
+Next, loop over the links identified links and extract the associated twitter accounts. This script uses a hierarchy wherein a representative's official twitter account is prioritized over a campaign twitter account, which is prioritized over a personal twitter account. If the representative has no accounts, this script outputs a message that "No Twitter Account for \[`link`\]".
+
+```{r extracting_KY_House, eval = FALSE}
+for(i in KY_House$Link){
+  site2<- i
+  site_html<-read_html(site2)
+  site.links<-site_html%>%
+    html_elements(".mw-parser-output")%>%
+    html_elements("a")%>%
+    html_text2()
+  twitter_index<-grep("Official Twitter", site.links)
+  KY_House$Twitter_Type[KY_House$Link==i]<-"Official"
+  if(is_empty(twitter_index)){
+    twitter_index<-grep("Campaign Twitter", site.links)
+    KY_House$Twitter_Type[KY_House$Link==i]<-"Campaign"
+  }
+  if(is_empty(twitter_index)){
+    twitter_index<-grep("Personal Twitter", site.links)
+    KY_House$Twitter_Type[KY_House$Link==i]<-"Personal"
+  }
+  if(is_empty(twitter_index)){
+    KY_House$Twitter_Link[KY_House$Link==i]<-NA
+    KY_House$Twitter_Type[KY_House$Link==i]<-NA
+    print(paste("No Twitter Account for",i))
+  } else{  Twitter.Link<-site_html%>%
+    html_elements(".mw-parser-output")%>%
+    html_elements("a")%>%
+    html_attr("href")
+    KY_House$Twitter_Link[KY_House$Link==i]<-Twitter.Link[twitter_index]
+    print(paste("Twitter Account for",i,"Logged"))
+    }
+}
+```
+
+Duplicating this with the Kentucky State Senate ballotpedia page:
+
+```{r extracting_KY_Senate, eval = FALSE}
+# Senate
+site<-"https://ballotpedia.org/Kentucky_State_Senate"
+site_html<-read_html(site)
+Name<-site_html%>%
+  html_elements("#officeholder-table td+ td a")%>%
+  html_text2()
+Party<-site_html%>%
+  html_elements(".partytd")%>%
+  html_text2()
+Link<-site_html%>%
+  html_elements("#officeholder-table td+ td a")%>%
+  html_attr("href")
+KY_Senate<-as.data.frame(cbind(Name, Party, Link))
+KY_Senate$Twitter_Link<-NA; KY_Senate$Twitter_Type<-NA
+
+for(i in KY_Senate$Link){
+  site2<- i
+  site_html<-read_html(site2)
+  site.links<-site_html%>%
+    html_elements(".mw-parser-output")%>%
+    html_elements("a")%>%
+    html_text2()
+  twitter_index<-grep("Official Twitter", site.links)
+  KY_Senate$Twitter_Type[KY_Senate$Link==i]<-"Official"
+  if(is_empty(twitter_index)){
+    twitter_index<-grep("Campaign Twitter", site.links)
+    KY_Senate$Twitter_Type[KY_Senate$Link==i]<-"Campaign"
+  }
+  if(is_empty(twitter_index)){
+    twitter_index<-grep("Personal Twitter", site.links)
+    KY_Senate$Twitter_Type[KY_Senate$Link==i]<-"Personal"
+  }
+  if(is_empty(twitter_index)){
+    KY_Senate$Twitter_Link[KY_Senate$Link==i]<-NA
+    KY_Senate$Twitter_Type[KY_Senate$Link==i]<-NA
+    print(paste("No Twitter Account for",i))
+  } else{  Twitter.Link<-site_html%>%
+    html_elements(".mw-parser-output")%>%
+    html_elements("a")%>%
+    html_attr("href")
+  KY_Senate$Twitter_Link[KY_Senate$Link==i]<-Twitter.Link[twitter_index]
+  print(paste("Twitter Account for",i,"Logged"))
+  }
+}
+```
+
+Adding State, Chamber, and Party Identifiers and Merging the Data
+
+```{r adding_details_merging, eval = FALSE}
+KY_House$State<-"KY"
+KY_Senate$State<-"KY"
+KY_House$Office<-"Representative"
+KY_Senate$Office<-"Senator"
+
+data<-rbind(KY_House, KY_Senate)
+
+data$Party[data$Party=="D"]<-"Democratic"
+data$Party[data$Party=="R"]<-"Republican"
+table(data$Party, data$State)
+
+write.csv(data, file = here("Full Account List.csv")) #saving the account account list for reference
+rm(KY_House, KY_Senate) #cleaning up the environment
+
+data<-read.csv(here("Full Account List.csv")) #reading in the account list [you can skip to this step if you already have the full account list you're interested in scraping]
+```
+
+## Basic Cleaning
+
+Next, we need to create a list of specific accounts we're going to scrape from (to run through the `rtweet` functions)
+
+```{r basic_link_cleaning, eval = FALSE}
+data<-data%>%
+  mutate(Twitter_Link=gsub("www.","", Twitter_Link))%>%
+  mutate(Twitter_Account=gsub("https://twitter.com/","", Twitter_Link))
+Account_List<-data$Twitter_Account[!is.na(data$Twitter_Account)]
+```
+
+## Scraper Credentials and Setup
+
+Now for the actual scraping! On July 22, 2022, `rtweet` updated and several functions were changed and discontinued. Now, a token is created locally that you can reference in the roaming App Data on your device for the rtweet package. For me, that is in the folder `Users/michael/AppData/Roaming/R/config/R/rtweet/`.
+
+### Setting the Scraper Token
+
+Here, I check if an authorization token exists \[where rtweet is expecting it\]. If not, I authorize via rtweet (which requires a twitter developer account with an associated API key and will ask for that key via a popup; best to do this piece line-by-lien if you haven't done it before) and save the authorization as "auth".
+
+```{r setting_auth_token, eval = FALSE}
+if(!file.exists("C:/Users/micha/AppData/Roaming/R/config/R/rtweet/AUTH.rds")) {
+    if(!exists("auth")){
+      auth<-rtweet_app()
+      auth_save(auth, "AUTH")
+    }
+}
+auth_as("AUTH")
+```
+
+## Scraping Code
+
+Scraping occurs in 'blocks' based on the rate limit that Twitter places on their API. Regardless of your developer account, the limit for a given account is 1,500 tweets per app or 900 per user per 15 minutes [source](https://developer.twitter.com/en/docs/twitter-api/rate-limits#v2-limits). Since R calculates time in seconds, we need to wait 900 seconds between each block
+
+The code below specifically extracts the most recent 25 tweets per account (at the time of writing, we have 78 accounts)- since most accounts do not tweet more than 25x per day (based on historical data), this is a reasonable starting point. Your mileage may vary as far as how many you would like to scrape, but bear in mind that $accounts*tweets <= 1500$ for each 'block' you're scraping cannot be or you'll run into Twitter's rate limit.
+
+You can always include more blocks, provided that you're willing to program in more `Sys.sleep(900)` breaks.
+
+```{r invalid_account_check, eval = FALSE }
+# Dropping accounts with no screen name - this prevents errors in the scrape block
+current_accounts<-lookup_users(Account_List)
+Account_List<-Account_List[Account_List %in% current_accounts$screen_name]
+
+## Making a temp framework for the data to live in
+df_1<-tibble()
+data_temp<-tibble()
+```
+
+```{r block_wise_scraping, eval = FALSE}
+for(i in Account_List[1:60]){
+  data_temp<-get_timeline(i, n=25) 
+  data_temp$Twitter_Account<-i
+  df_1<-rbind(df_1, data_temp)
+}
+
+Sys.sleep(900)
+
+df_2<-tibble()
+for(i in Account_List[61:120]){
+  data_temp<-get_timeline(i, n=25)
+  data_temp$Twitter_Account<-i
+  df_2<-rbind(df_2, data_temp)
+}
+
+Sys.sleep(900)
+
+df_3<-tibble()
+for(i in Account_List[121:180]){
+  data_temp<-get_timeline(i, n=25)
+  data_temp$Twitter_Account<-i
+  df_3<-rbind(df_3, data_temp)
+}
+
+timelines_combined<-rbind(df_1, df_2, df_3)
+timelines_combined$scrape_date<-Sys.Date()
+rm(df_1, df_2, df_3)
+```
+
+## Saving the Data
+
+If you're only interested in a cross-sectional scrape, the timelines_combined data file will now be your final data - congratulations! If you're updating a file (like I was in my work), consider the following code that checks for an archived file, updates it if it exists, and then saves a CSV for more manageable local visualization/analysis.
+
+### Checking for an archived file
+
+```{r file_check, eval = FALSE}
+# This checks if an older version of the data already exits. If not, save a 'benchmark version' with a specific starting point.
+if(!file.exists(here("tweets_data.rds"))){
+  data_combined<-timelines_combined%>%
+    dplyr::filter(created_at > "2022-04-30") #I set this for my own work - you don't need to filter (but you certainly can)
+  saveRDS(data_combined, file = here("tweets_data.rds"))
+}else{
+  # if an older version DOES exist, subset to just the most recent tweets [created in the last 3 days] and append it
+data_recent<-timelines_combined%>%
+  dplyr::filter(created_at > Sys.Date()-3) 
+old_data<-readRDS(here("tweets_data.rds")) #Reading in old file (so we can update it)
+data_recent_match<-data_recent[colnames(data_recent) %in% colnames(old_data)]
+old_data_match<-old_data[colnames(old_data)%in% colnames(data_recent)]
+
+## This is a version-control 'insurance policy' in case variable/column names change over time
+
+#reordering columns so they match the old data
+col_order<-colnames(old_data_match)
+data_recent_match<-data_recent_match[,col_order]
+full_timeline<-rbind(old_data_match, data_recent_match) ##rbind the new tweets and the old tweets
+non_dupe_index<-!duplicated(full_timeline[,2])      ##Which tweets have unique status IDs
+timeline_unique<-full_timeline[non_dupe_index,]     ##subset to the tweets that have unique status IDs
+rm(full_timeline); rm(data_recent); rm(old_data) ##drop files not being saved
+saveRDS(timeline_unique, file = here("tweets_data.rds"))
+}
+```
+
+### Updating CSV
+
+```{r file_update, eval = FALSE}
+tweet_data<-readRDS(here("tweets_data.rds"))
+data_short<-tweet_data
+data_combined<-left_join(data_short, data, by = "Twitter_Account")
+write.csv(data_combined, here("tweets_data.csv"))
+```
